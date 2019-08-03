@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use ggez;
 use ggez::event::KeyCode;
 use ggez::event::{self, MouseButton};
@@ -47,16 +49,14 @@ impl event::EventHandler for MainState {
     fn key_up_event(&mut self, _ctx: &mut Context, code: KeyCode, _keymods: KeyMods) {
         match code {
             KeyCode::Return => {
-                // Restart on "enter" key after a player has won.
-                if self.winner.is_some() {
-                    self.winner = None;
-                    self.grid = [[None; 3]; 3];
-                }
+                self.winner = None;
+                self.grid = [[None; 3]; 3];
             }
             _ => {}
         }
     }
 
+    // FIXME: Win detection and cell detection are hardcoded to a 3x3 grid.
     fn mouse_button_up_event(&mut self, ctx: &mut Context, _btn: MouseButton, x: f32, y: f32) {
         if self.winner.is_some() {
             return;
@@ -76,6 +76,9 @@ impl event::EventHandler for MainState {
         } else {
             2
         };
+        if self.grid[col][row].is_some() {
+            return;
+        }
         self.grid[col][row] = Some(self.turn);
         self.turn = match self.turn {
             Player::Naughts => Player::Crosses,
