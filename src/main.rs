@@ -43,8 +43,7 @@ struct MainState {
 }
 
 impl MainState {
-    fn new() -> ggez::GameResult<MainState> {
-        let size = 3;
+    fn new(size: usize) -> ggez::GameResult<MainState> {
         let s = MainState {
             winner: None,
             turn: Player::Naughts,
@@ -73,9 +72,10 @@ impl MainState {
     }
 
     fn build_players(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
-        let ((w, h), size) = (graphics::drawable_size(ctx), 16.0);
+        let (w, h) = graphics::drawable_size(ctx);
         let column_width = w / self.size as f32;
         let row_height = h / self.size as f32;
+        let size = (column_width + row_height) / 2.0 / 4.0;
         for (ii, col) in self.grid.iter().enumerate() {
             for (jj, cell) in col.iter().enumerate() {
                 if let Some(player) = cell {
@@ -136,7 +136,7 @@ impl event::EventHandler for MainState {
     fn key_up_event(&mut self, _ctx: &mut Context, code: KeyCode, _keymods: KeyMods) {
         match code {
             KeyCode::Return => {
-                *self = MainState::new().unwrap();
+                *self = MainState::new(self.size).unwrap();
             }
             _ => {}
         }
@@ -222,10 +222,20 @@ impl event::EventHandler for MainState {
     }
 }
 
+use clap::{App, Arg};
+
 pub fn main() -> ggez::GameResult {
+    let matches = App::new("Tick Tack Toe")
+        .arg(Arg::with_name("size")
+        .takes_value(true)
+        .long("size")
+        .short("s")
+        .help("Size of grid."))
+        .get_matches();
+    let size = matches.value_of("size").unwrap_or("3").parse::<usize>().expect("parsing size value");
     let cb = ggez::ContextBuilder::new("Tick Tack Toe", "Jack Mordaunt")
         .window_setup(ggez::conf::WindowSetup::default().vsync(true));
     let (ctx, event_loop) = &mut cb.build()?;
-    let state = &mut MainState::new()?;
+    let state = &mut MainState::new(size)?;
     event::run(ctx, event_loop, state)
 }

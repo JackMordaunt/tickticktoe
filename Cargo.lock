@@ -1805,6 +1805,7 @@ dependencies = [
 name = "ticktacktoe"
 version = "0.1.0"
 dependencies = [
+ "clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "ggez 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
