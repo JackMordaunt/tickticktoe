@@ -34,8 +34,9 @@ struct MainState {
     winner: Option<(Player, Axis)>,
     turn: Player,
     grid: Vec<Vec<Option<Player>>>,
-    rows: usize,
-    columns: usize,
+    size: usize,
+    // FIXME: Encapsulate scores counting / win detection in a type.
+    // TODO: Dynamic win detection: "n in a row" at any point on the grid.
     row_scores: Vec<(usize, usize)>,
     column_scores: Vec<(usize, usize)>,
     diagonal_scores: Vec<(usize, usize)>,
@@ -43,15 +44,14 @@ struct MainState {
 
 impl MainState {
     fn new() -> ggez::GameResult<MainState> {
-        let (rows, columns) = (3, 3);
+        let size = 3;
         let s = MainState {
             winner: None,
             turn: Player::Naughts,
-            grid: vec![vec![None; rows]; columns],
-            rows: rows,
-            columns: columns,
-            row_scores: vec![(0, 0); rows],
-            column_scores: vec![(0, 0); columns],
+            grid: vec![vec![None; size]; size],
+            size: size,
+            row_scores: vec![(0, 0); size],
+            column_scores: vec![(0, 0); size],
             diagonal_scores: vec![(0, 0); 2],
         };
         Ok(s)
@@ -59,13 +59,13 @@ impl MainState {
 
     fn build_grid(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
         let ((w, h), stroke, color) = (graphics::drawable_size(ctx), 2.0, self.turn.color());
-        let column_width = w / self.columns as f32;
-        for ii in 1..self.columns {
+        let column_width = w / self.size as f32;
+        for ii in 1..self.size {
             let offset = column_width * ii as f32;
             mb.line(&[[offset, 0.0], [offset, h]], stroke, color)?;
         }
-        let row_height = h / self.rows as f32;
-        for ii in 1..self.rows {
+        let row_height = h / self.size as f32;
+        for ii in 1..self.size {
             let offset = row_height * ii as f32;
             mb.line(&[[0.0, offset], [w, offset]], stroke, color)?;
         }
@@ -74,8 +74,8 @@ impl MainState {
 
     fn build_players(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
         let ((w, h), size) = (graphics::drawable_size(ctx), 16.0);
-        let column_width = w / self.columns as f32;
-        let row_height = h / self.rows as f32;
+        let column_width = w / self.size as f32;
+        let row_height = h / self.size as f32;
         for (ii, col) in self.grid.iter().enumerate() {
             for (jj, cell) in col.iter().enumerate() {
                 if let Some(player) = cell {
@@ -107,13 +107,13 @@ impl MainState {
             let coords = match axis {
                 Axis::Column(n) => {
                     let n = (*n) as f32;
-                    let column_size = w / self.columns as f32;
+                    let column_size = w / self.size as f32;
                     let x = column_size * n + column_size / 2.0 - stroke / 2.0;
                     [[x, padding], [x, h - padding]]
                 }
                 Axis::Row(n) => {
                     let n = (*n) as f32;
-                    let row_size = h / self.rows as f32;
+                    let row_size = h / self.size as f32;
                     let y = row_size * n + row_size / 2.0 - stroke / 2.0;
                     [[padding, y], [w - padding, y]]
                 }
@@ -147,12 +147,13 @@ impl event::EventHandler for MainState {
             return;
         }
         let (w, h) = graphics::drawable_size(ctx);
-        let col = (x / w * self.columns as f32) as usize;
-        let row = (y / h * self.rows as f32) as usize;
+        let col = (x / w * self.size as f32) as usize;
+        let row = (y / h * self.size as f32) as usize;
         if self.grid[col][row].is_some() {
             return;
         }
         self.grid[col][row] = Some(self.turn);
+        // Mutate scores.
         match self.turn {
             Player::Crosses => {
                 self.row_scores[row].0 += 1;
@@ -160,7 +161,7 @@ impl event::EventHandler for MainState {
                 if row == col {
                     self.diagonal_scores[0].0 += 1;
                 }
-                if row + col == self.columns.min(self.rows) - 1 {
+                if row + col == self.size.min(self.size) - 1 {
                     self.diagonal_scores[1].0 += 1;
                 }
             }
@@ -170,22 +171,22 @@ impl event::EventHandler for MainState {
                 if row == col {
                     self.diagonal_scores[0].1 += 1;
                 }
-                if row + col == self.columns.min(self.rows) - 1 {
+                if row + col == self.size.min(self.size) - 1 {
                     self.diagonal_scores[1].1 += 1;
                 }
             }
         };
         // Check win condition.
-        if self.row_scores[row] == (self.rows, 0) {
+        if self.row_scores[row] == (self.size, 0) {
             self.winner = Some((Player::Crosses, Axis::Row(row)));
         }
-        if self.row_scores[row] == (0, self.rows) {
+        if self.row_scores[row] == (0, self.size) {
             self.winner = Some((Player::Naughts, Axis::Row(row)));
         }
-        if self.column_scores[col] == (self.columns, 0) {
+        if self.column_scores[col] == (self.size, 0) {
             self.winner = Some((Player::Crosses, Axis::Column(col)));
         }
-        if self.column_scores[col] == (0, self.columns) {
+        if self.column_scores[col] == (0, self.size) {
             self.winner = Some((Player::Naughts, Axis::Column(col)));
         }
         if self.diagonal_scores[0] == (3, 0) {
