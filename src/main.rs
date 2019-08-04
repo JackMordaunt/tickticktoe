@@ -23,7 +23,6 @@ impl Player {
     }
 }
 
-// #[derive(Copy, Clone)]
 enum Axis {
     Column(usize),
     Row(usize),
@@ -37,6 +36,9 @@ struct MainState {
     grid: Vec<Vec<Option<Player>>>,
     rows: usize,
     columns: usize,
+    row_scores: Vec<(usize, usize)>,
+    column_scores: Vec<(usize, usize)>,
+    diagonal_scores: Vec<(usize, usize)>,
 }
 
 impl MainState {
@@ -48,44 +50,47 @@ impl MainState {
             grid: vec![vec![None; rows]; columns],
             rows: rows,
             columns: columns,
+            row_scores: vec![(0, 0); rows],
+            column_scores: vec![(0, 0); columns],
+            diagonal_scores: vec![(0, 0); 2],
         };
         Ok(s)
     }
 
     fn build_grid(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
-        let (w, h) = graphics::drawable_size(ctx);
-        mb.line(&[[w / 3.0, 000.0], [w / 3.0, h]], 2.0, self.turn.color())?
-            .line(
-                &[[(w / 3.0) * 2.0, 000.0], [(w / 3.0) * 2.0, h]],
-                2.0,
-                self.turn.color(),
-            )?
-            .line(&[[0.0, h / 3.0], [w, h / 3.0]], 2.0, self.turn.color())?
-            .line(
-                &[[0.0, (h / 3.0) * 2.0], [w, (h / 3.0) * 2.0]],
-                2.0,
-                self.turn.color(),
-            )?;
+        let ((w, h), stroke, color) = (graphics::drawable_size(ctx), 2.0, self.turn.color());
+        let column_width = w / self.columns as f32;
+        for ii in 1..self.columns {
+            let offset = column_width * ii as f32;
+            mb.line(&[[offset, 0.0], [offset, h]], stroke, color)?;
+        }
+        let row_height = h / self.rows as f32;
+        for ii in 1..self.rows {
+            let offset = row_height * ii as f32;
+            mb.line(&[[0.0, offset], [w, offset]], stroke, color)?;
+        }
         Ok(())
     }
 
     fn build_players(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
-        let (w, h) = graphics::drawable_size(ctx);
+        let ((w, h), size) = (graphics::drawable_size(ctx), 16.0);
+        let column_width = w / self.columns as f32;
+        let row_height = h / self.rows as f32;
         for (ii, col) in self.grid.iter().enumerate() {
             for (jj, cell) in col.iter().enumerate() {
                 if let Some(player) = cell {
                     let (x, y) = (
-                        (w / 3.0) * ((ii + 1) as f32) - (w / 6.0),
-                        (h / 3.0) * ((jj + 1) as f32) - (h / 6.0),
+                        (column_width) * ((ii + 1) as f32) - (column_width / 2.0),
+                        (row_height) * ((jj + 1) as f32) - (row_height / 2.0),
                     );
                     let color = player.color();
                     match player {
                         Player::Naughts => {
-                            mb.circle(DrawMode::stroke(2.0), [x, y], 32.0, 0.1, color);
+                            mb.circle(DrawMode::stroke(2.0), [x, y], size, 0.1, color);
                         }
                         Player::Crosses => {
-                            mb.line(&[[x - 32.0, y - 32.0], [x + 32.0, y + 32.0]], 2.0, color)?;
-                            mb.line(&[[x + 32.0, y - 32.0], [x - 32.0, y + 32.0]], 2.0, color)?;
+                            mb.line(&[[x - size, y - size], [x + size, y + size]], 2.0, color)?;
+                            mb.line(&[[x + size, y - size], [x - size, y + size]], 2.0, color)?;
                         }
                     }
                 }
@@ -131,75 +136,74 @@ impl event::EventHandler for MainState {
     fn key_up_event(&mut self, _ctx: &mut Context, code: KeyCode, _keymods: KeyMods) {
         match code {
             KeyCode::Return => {
-                self.winner = None;
-                self.grid = vec![vec![None; 3]; 3];
+                *self = MainState::new().unwrap();
             }
             _ => {}
         }
     }
 
-    // FIXME: Win detection and cell detection are hardcoded to a 3x3 grid.
     fn mouse_button_up_event(&mut self, ctx: &mut Context, _btn: MouseButton, x: f32, y: f32) {
         if self.winner.is_some() {
             return;
         }
         let (w, h) = graphics::drawable_size(ctx);
-        let col = if x < w / 3.0 {
-            0
-        } else if x < 2.0 * (w / 3.0) {
-            1
-        } else {
-            2
-        };
-        let row = if y < h / 3.0 {
-            0
-        } else if y < 2.0 * (h / 3.0) {
-            1
-        } else {
-            2
-        };
+        let col = (x / w * self.columns as f32) as usize;
+        let row = (y / h * self.rows as f32) as usize;
         if self.grid[col][row].is_some() {
             return;
         }
         self.grid[col][row] = Some(self.turn);
+        match self.turn {
+            Player::Crosses => {
+                self.row_scores[row].0 += 1;
+                self.column_scores[col].0 += 1;
+                if row == col {
+                    self.diagonal_scores[0].0 += 1;
+                }
+                if row + col == self.columns.min(self.rows) - 1 {
+                    self.diagonal_scores[1].0 += 1;
+                }
+            }
+            Player::Naughts => {
+                self.row_scores[row].1 += 1;
+                self.column_scores[col].1 += 1;
+                if row == col {
+                    self.diagonal_scores[0].1 += 1;
+                }
+                if row + col == self.columns.min(self.rows) - 1 {
+                    self.diagonal_scores[1].1 += 1;
+                }
+            }
+        };
+        // Check win condition.
+        if self.row_scores[row] == (self.rows, 0) {
+            self.winner = Some((Player::Crosses, Axis::Row(row)));
+        }
+        if self.row_scores[row] == (0, self.rows) {
+            self.winner = Some((Player::Naughts, Axis::Row(row)));
+        }
+        if self.column_scores[col] == (self.columns, 0) {
+            self.winner = Some((Player::Crosses, Axis::Column(col)));
+        }
+        if self.column_scores[col] == (0, self.columns) {
+            self.winner = Some((Player::Naughts, Axis::Column(col)));
+        }
+        if self.diagonal_scores[0] == (3, 0) {
+            self.winner = Some((Player::Crosses, Axis::LeftDiagonal));
+        }
+        if self.diagonal_scores[0] == (0, 3) {
+            self.winner = Some((Player::Naughts, Axis::LeftDiagonal));
+        }
+        if self.diagonal_scores[1] == (3, 0) {
+            self.winner = Some((Player::Crosses, Axis::RightDiagonal));
+        }
+        if self.diagonal_scores[1] == (0, 3) {
+            self.winner = Some((Player::Naughts, Axis::RightDiagonal));
+        }
         self.turn = match self.turn {
             Player::Naughts => Player::Crosses,
             Player::Crosses => Player::Naughts,
         };
-        // Check win condition.
-        let grid = &self.grid;
-        // column 0
-        if grid[0][0].is_some() && grid[0][0] == grid[0][1] && grid[0][1] == grid[0][2] {
-            self.winner = Some((grid[0][0].unwrap(), Axis::Column(0)));
-        }
-        // column 1
-        if grid[1][0].is_some() && grid[1][0] == grid[1][1] && grid[1][1] == grid[1][2] {
-            self.winner = Some((grid[1][0].unwrap(), Axis::Column(1)));
-        }
-        // column 2
-        if grid[2][0].is_some() && grid[2][0] == grid[2][1] && grid[2][1] == grid[2][2] {
-            self.winner = Some((grid[2][0].unwrap(), Axis::Column(2)));
-        }
-        // row 0
-        if grid[0][0].is_some() && grid[0][0] == grid[1][0] && grid[1][0] == grid[2][0] {
-            self.winner = Some((grid[0][0].unwrap(), Axis::Row(0)));
-        }
-        // row 1
-        if grid[0][1].is_some() && grid[0][1] == grid[1][1] && grid[1][1] == grid[2][1] {
-            self.winner = Some((grid[0][1].unwrap(), Axis::Row(1)));
-        }
-        // row 2
-        if grid[0][2].is_some() && grid[0][2] == grid[1][2] && grid[1][2] == grid[2][2] {
-            self.winner = Some((grid[0][2].unwrap(), Axis::Row(2)));
-        }
-        // diag 0
-        if grid[0][0].is_some() && grid[0][0] == grid[1][1] && grid[1][1] == grid[2][2] {
-            self.winner = Some((grid[0][0].unwrap(), Axis::LeftDiagonal));
-        }
-        // diag 1
-        if grid[0][2].is_some() && grid[0][2] == grid[1][1] && grid[1][1] == grid[2][0] {
-            self.winner = Some((grid[0][2].unwrap(), Axis::RightDiagonal));
-        }
     }
 
     fn draw(&mut self, ctx: &mut ggez::Context) -> ggez::GameResult {
