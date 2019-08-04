@@ -3,7 +3,7 @@
 use ggez;
 use ggez::event::KeyCode;
 use ggez::event::{self, MouseButton};
-use ggez::graphics::{self, DrawMode};
+use ggez::graphics::{self, DrawMode, MeshBuilder};
 use ggez::input::keyboard::KeyMods;
 use ggez::timer;
 use ggez::Context;
@@ -14,8 +14,8 @@ enum Player {
     Crosses,
 }
 
-impl Into<graphics::Color> for Player {
-    fn into(self) -> graphics::Color {
+impl Player {
+    fn color(&self) -> graphics::Color {
         match self {
             Player::Naughts => [1.0, 0.647, 0.0, 1.0].into(),
             Player::Crosses => [0.0, 0.35, 1.0, 1.0].into(),
@@ -37,6 +37,48 @@ impl MainState {
             grid: [[None; 3]; 3],
         };
         Ok(s)
+    }
+
+    fn build_grid(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
+        let (w, h) = graphics::size(ctx);
+        mb.line(&[[w / 3.0, 000.0], [w / 3.0, h]], 2.0, self.turn.color())?
+            .line(
+                &[[(w / 3.0) * 2.0, 000.0], [(w / 3.0) * 2.0, h]],
+                2.0,
+                self.turn.color(),
+            )?
+            .line(&[[0.0, h / 3.0], [w, h / 3.0]], 2.0, self.turn.color())?
+            .line(
+                &[[0.0, (h / 3.0) * 2.0], [w, (h / 3.0) * 2.0]],
+                2.0,
+                self.turn.color(),
+            )?;
+        Ok(())
+    }
+
+    fn build_players(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
+        let (w, h) = graphics::size(ctx);
+        for (ii, col) in self.grid.iter().enumerate() {
+            for (jj, cell) in col.iter().enumerate() {
+                if let Some(player) = cell {
+                    let (x, y) = (
+                        (w / 3.0) * ((ii + 1) as f32) - (w / 6.0),
+                        (h / 3.0) * ((jj + 1) as f32) - (h / 6.0),
+                    );
+                    let color = player.color();
+                    match player {
+                        Player::Naughts => {
+                            mb.circle(DrawMode::stroke(2.0), [x, y], 32.0, 0.1, color);
+                        }
+                        Player::Crosses => {
+                            mb.line(&[[x - 32.0, y - 32.0], [x + 32.0, y + 32.0]], 2.0, color)?;
+                            mb.line(&[[x + 32.0, y - 32.0], [x - 32.0, y + 32.0]], 2.0, color)?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -122,49 +164,9 @@ impl event::EventHandler for MainState {
 
     fn draw(&mut self, ctx: &mut ggez::Context) -> ggez::GameResult {
         graphics::clear(ctx, [0.0, 0.0, 0.0, 0.0].into());
-        // draw grid
-        let (w, h) = graphics::size(ctx);
-        let mut mb = graphics::MeshBuilder::new();
-        mb.line(&[[w / 3.0, 000.0], [w / 3.0, h]], 2.0, self.turn.into())?
-            .line(
-                &[[(w / 3.0) * 2.0, 000.0], [(w / 3.0) * 2.0, h]],
-                2.0,
-                self.turn.into(),
-            )?
-            .line(&[[0.0, h / 3.0], [w, h / 3.0]], 2.0, self.turn.into())?
-            .line(
-                &[[0.0, (h / 3.0) * 2.0], [w, (h / 3.0) * 2.0]],
-                2.0,
-                self.turn.into(),
-            )?;
-        // draw players
-        for (ii, col) in self.grid.iter().enumerate() {
-            for (jj, cell) in col.iter().enumerate() {
-                if let Some(player) = cell {
-                    let (x, y) = (
-                        (w / 3.0) * ((ii + 1) as f32) - (w / 6.0),
-                        (h / 3.0) * ((jj + 1) as f32) - (h / 6.0),
-                    );
-                    match player {
-                        Player::Naughts => {
-                            mb.circle(DrawMode::stroke(2.0), [x, y], 32.0, 0.1, (*player).into());
-                        }
-                        Player::Crosses => {
-                            mb.line(
-                                &[[x - 32.0, y - 32.0], [x + 32.0, y + 32.0]],
-                                2.0,
-                                (*player).into(),
-                            )?;
-                            mb.line(
-                                &[[x + 32.0, y - 32.0], [x - 32.0, y + 32.0]],
-                                2.0,
-                                (*player).into(),
-                            )?;
-                        }
-                    }
-                }
-            }
-        }
+        let mut mb = MeshBuilder::new();
+        self.build_grid(ctx, &mut mb)?;
+        self.build_players(ctx, &mut mb)?;
         let mesh = mb.build(ctx)?;
         graphics::draw(ctx, &mesh, graphics::DrawParam::default())?;
         graphics::present(ctx)?;
@@ -173,7 +175,7 @@ impl event::EventHandler for MainState {
 }
 
 pub fn main() -> ggez::GameResult {
-    let cb = ggez::ContextBuilder::new("super_simple", "ggez")
+    let cb = ggez::ContextBuilder::new("Tick Tack Toe", "Jack Mordaunt")
         .window_setup(ggez::conf::WindowSetup::default().vsync(true));
     let (ctx, event_loop) = &mut cb.build()?;
     let state = &mut MainState::new()?;
