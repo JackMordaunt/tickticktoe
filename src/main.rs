@@ -93,6 +93,33 @@ impl MainState {
         }
         Ok(())
     }
+
+    fn build_throughline(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
+        if let Some((_, axis)) = &self.winner {
+            let (w, h) = graphics::drawable_size(ctx);
+            let padding = 20.0;
+            let stroke = 2.0;
+            let coords = match axis {
+                Axis::Column(n) => {
+                    let n = (*n) as f32;
+                    let column_size = w / self.columns as f32;
+                    let x = column_size * n + column_size / 2.0 - stroke / 2.0;
+                    [[x, padding], [x, h - padding]]
+                }
+                Axis::Row(n) => {
+                    let n = (*n) as f32;
+                    let row_size = h / self.rows as f32;
+                    let y = row_size * n + row_size / 2.0 - stroke / 2.0;
+                    [[padding, y], [w - padding, y]]
+                }
+                Axis::LeftDiagonal => [[padding, padding], [w - padding, h - padding]],
+                Axis::RightDiagonal => [[w - padding, padding], [padding, h - padding]],
+            };
+            mb.line(&coords, stroke, [1.0, 1.0, 1.0, 1.0].into())?;
+        }
+        Ok(())
+    }
+
 }
 
 impl event::EventHandler for MainState {
@@ -177,49 +204,11 @@ impl event::EventHandler for MainState {
 
     fn draw(&mut self, ctx: &mut ggez::Context) -> ggez::GameResult {
         graphics::clear(ctx, [0.0, 0.0, 0.0, 0.0].into());
-        let (w, h) = graphics::drawable_size(ctx);
         let mut mb = MeshBuilder::new();
         self.build_grid(ctx, &mut mb)?;
         self.build_players(ctx, &mut mb)?;
-        if let Some((_, axis)) = &self.winner {
-            let padding = 20.0;
-            let stroke = 2.0;
-            match axis {
-                Axis::Column(n) => {
-                    let n = (*n) as f32;
-                    let column_size = w / self.columns as f32;
-                    let x = column_size * n + column_size / 2.0 - stroke / 2.0;
-                    mb.line(
-                        &[[x, padding], [x, h - padding]],
-                        stroke,
-                        [1.0, 1.0, 1.0, 1.0].into(),
-                    )?;
-                }
-                Axis::Row(n) => {
-                    let n = (*n) as f32;
-                    let row_size = h / self.rows as f32;
-                    let y = row_size * n + row_size / 2.0 - stroke / 2.0;
-                    mb.line(
-                        &[[padding, y], [w - padding, y]],
-                        stroke,
-                        [1.0, 1.0, 1.0, 1.0].into(),
-                    )?;
-                }
-                Axis::LeftDiagonal => {
-                    mb.line(
-                        &[[padding, padding], [w - padding, h - padding]],
-                        stroke,
-                        [1.0, 1.0, 1.0, 1.0].into(),
-                    )?;
-                }
-                Axis::RightDiagonal => {
-                    mb.line(
-                        &[[w - padding, padding], [padding, h - padding]],
-                        stroke,
-                        [1.0, 1.0, 1.0, 1.0].into(),
-                    )?;
-                }
-            }
+        if self.winner.is_some() {
+            self.build_throughline(ctx, &mut mb)?;
         }
         let mesh = mb.build(ctx)?;
         graphics::draw(ctx, &mesh, graphics::DrawParam::default())?;
