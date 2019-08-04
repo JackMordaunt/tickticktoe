@@ -23,24 +23,37 @@ impl Player {
     }
 }
 
+// #[derive(Copy, Clone)]
+enum Axis {
+    Column(usize),
+    Row(usize),
+    LeftDiagonal,
+    RightDiagonal,
+}
+
 struct MainState {
-    winner: Option<Player>,
+    winner: Option<(Player, Axis)>,
     turn: Player,
-    grid: [[Option<Player>; 3]; 3],
+    grid: Vec<Vec<Option<Player>>>,
+    rows: usize,
+    columns: usize,
 }
 
 impl MainState {
     fn new() -> ggez::GameResult<MainState> {
+        let (rows, columns) = (3, 3);
         let s = MainState {
             winner: None,
             turn: Player::Naughts,
-            grid: [[None; 3]; 3],
+            grid: vec![vec![None; rows]; columns],
+            rows: rows,
+            columns: columns,
         };
         Ok(s)
     }
 
     fn build_grid(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
-        let (w, h) = graphics::size(ctx);
+        let (w, h) = graphics::drawable_size(ctx);
         mb.line(&[[w / 3.0, 000.0], [w / 3.0, h]], 2.0, self.turn.color())?
             .line(
                 &[[(w / 3.0) * 2.0, 000.0], [(w / 3.0) * 2.0, h]],
@@ -57,7 +70,7 @@ impl MainState {
     }
 
     fn build_players(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
-        let (w, h) = graphics::size(ctx);
+        let (w, h) = graphics::drawable_size(ctx);
         for (ii, col) in self.grid.iter().enumerate() {
             for (jj, cell) in col.iter().enumerate() {
                 if let Some(player) = cell {
@@ -92,7 +105,7 @@ impl event::EventHandler for MainState {
         match code {
             KeyCode::Return => {
                 self.winner = None;
-                self.grid = [[None; 3]; 3];
+                self.grid = vec![vec![None; 3]; 3];
             }
             _ => {}
         }
@@ -103,7 +116,7 @@ impl event::EventHandler for MainState {
         if self.winner.is_some() {
             return;
         }
-        let (w, h) = graphics::size(ctx);
+        let (w, h) = graphics::drawable_size(ctx);
         let col = if x < w / 3.0 {
             0
         } else if x < 2.0 * (w / 3.0) {
@@ -127,46 +140,87 @@ impl event::EventHandler for MainState {
             Player::Crosses => Player::Naughts,
         };
         // Check win condition.
-        let grid = self.grid;
+        let grid = &self.grid;
         // column 0
         if grid[0][0].is_some() && grid[0][0] == grid[0][1] && grid[0][1] == grid[0][2] {
-            self.winner = grid[0][0];
+            self.winner = Some((grid[0][0].unwrap(), Axis::Column(0)));
         }
         // column 1
         if grid[1][0].is_some() && grid[1][0] == grid[1][1] && grid[1][1] == grid[1][2] {
-            self.winner = grid[1][0];
+            self.winner = Some((grid[1][0].unwrap(), Axis::Column(1)));
         }
         // column 2
         if grid[2][0].is_some() && grid[2][0] == grid[2][1] && grid[2][1] == grid[2][2] {
-            self.winner = grid[2][0];
+            self.winner = Some((grid[2][0].unwrap(), Axis::Column(2)));
         }
         // row 0
         if grid[0][0].is_some() && grid[0][0] == grid[1][0] && grid[1][0] == grid[2][0] {
-            self.winner = grid[0][0];
+            self.winner = Some((grid[0][0].unwrap(), Axis::Row(0)));
         }
         // row 1
         if grid[0][1].is_some() && grid[0][1] == grid[1][1] && grid[1][1] == grid[2][1] {
-            self.winner = grid[0][1];
+            self.winner = Some((grid[0][1].unwrap(), Axis::Row(1)));
         }
         // row 2
         if grid[0][2].is_some() && grid[0][2] == grid[1][2] && grid[1][2] == grid[2][2] {
-            self.winner = grid[0][2];
+            self.winner = Some((grid[0][2].unwrap(), Axis::Row(2)));
         }
         // diag 0
         if grid[0][0].is_some() && grid[0][0] == grid[1][1] && grid[1][1] == grid[2][2] {
-            self.winner = grid[0][0];
+            self.winner = Some((grid[0][0].unwrap(), Axis::LeftDiagonal));
         }
         // diag 1
         if grid[0][2].is_some() && grid[0][2] == grid[1][1] && grid[1][1] == grid[2][0] {
-            self.winner = grid[0][2];
+            self.winner = Some((grid[0][2].unwrap(), Axis::RightDiagonal));
         }
     }
 
     fn draw(&mut self, ctx: &mut ggez::Context) -> ggez::GameResult {
         graphics::clear(ctx, [0.0, 0.0, 0.0, 0.0].into());
+        let (w, h) = graphics::drawable_size(ctx);
         let mut mb = MeshBuilder::new();
         self.build_grid(ctx, &mut mb)?;
         self.build_players(ctx, &mut mb)?;
+        if let Some((_, axis)) = &self.winner {
+            let padding = 20.0;
+            let stroke = 2.0;
+            match axis {
+                Axis::Column(n) => {
+                    let n = (*n) as f32;
+                    let column_size = w / self.columns as f32;
+                    let x = column_size * n + column_size / 2.0 - stroke / 2.0;
+                    mb.line(
+                        &[[x, padding], [x, h - padding]],
+                        stroke,
+                        [1.0, 1.0, 1.0, 1.0].into(),
+                    )?;
+                }
+                Axis::Row(n) => {
+                    let n = (*n) as f32;
+                    let row_size = h / self.rows as f32;
+                    let y = row_size * n + row_size / 2.0 - stroke / 2.0;
+                    mb.line(
+                        &[[padding, y], [w - padding, y]],
+                        stroke,
+                        [1.0, 1.0, 1.0, 1.0].into(),
+                    )?;
+                }
+                Axis::LeftDiagonal => {
+                    mb.line(
+                        &[[padding, padding], [w - padding, h - padding]],
+                        stroke,
+                        [1.0, 1.0, 1.0, 1.0].into(),
+                    )?;
+                }
+                Axis::RightDiagonal => {
+                    mb.line(
+                        &[[w - padding, padding], [padding, h - padding]],
+                        stroke,
+                        [1.0, 1.0, 1.0, 1.0].into(),
+                    )?;
+                }
+            }
+        }
         let mesh = mb.build(ctx)?;
         graphics::draw(ctx, &mesh, graphics::DrawParam::default())?;
         graphics::present(ctx)?;
