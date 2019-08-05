@@ -31,16 +31,18 @@ struct MainState {
     grid: Vec<Vec<Option<Player>>>,
     size: usize,
     win: usize,
+    gravity: bool,
 }
 
 impl MainState {
-    fn new(size: usize, win: usize) -> ggez::GameResult<MainState> {
+    fn new(size: usize, win: usize, gravity: bool) -> ggez::GameResult<MainState> {
         let s = MainState {
             winner: None,
             turn: Player::Naughts,
             grid: vec![vec![None; size]; size],
             size: size,
             win: win,
+            gravity: gravity,
         };
         Ok(s)
     }
@@ -105,7 +107,6 @@ impl MainState {
                 ],
             ];
             mb.line(&coords, stroke, [1.0, 1.0, 1.0, 1.0].into())?;
-
         }
         Ok(())
     }
@@ -129,7 +130,6 @@ impl MainState {
             }
         }
     }
-
 }
 
 impl event::EventHandler for MainState {
@@ -141,7 +141,7 @@ impl event::EventHandler for MainState {
     fn key_up_event(&mut self, _ctx: &mut Context, code: KeyCode, _keymods: KeyMods) {
         match code {
             KeyCode::Return => {
-                *self = MainState::new(self.size, self.win).unwrap();
+                *self = MainState::new(self.size, self.win, self.gravity).unwrap();
             }
             _ => {}
         }
@@ -153,11 +153,27 @@ impl event::EventHandler for MainState {
         }
         let (w, h) = graphics::drawable_size(ctx);
         let col = (x / w * self.size as f32) as usize;
-        let row = (y / h * self.size as f32) as usize;
-        if self.grid[col][row].is_some() {
-            return;
+        let mut row = (y / h * self.size as f32) as usize;
+        if self.gravity {
+            // If gravity is on, we place in the first open cell starting from
+            // the last row.
+            // If the column is completely full, then the click is a non-move.
+            if self.grid[col][0].is_some() {
+                return;
+            }
+            for ii in (0..self.grid[col].len()).rev() {
+                if self.grid[col][ii].is_none() {
+                    self.grid[col][ii] = Some(self.turn);
+                    row = ii; // Capture the real row value.
+                    break;
+                }
+            }
+        } else {
+            if self.grid[col][row].is_some() {
+                return;
+            }
+            self.grid[col][row] = Some(self.turn);
         }
-        self.grid[col][row] = Some(self.turn);
         for (forward, backward) in &[
             ((1, 0), (-1, 0)),
             ((0, 1), (0, -1)),
@@ -226,6 +242,13 @@ pub fn main() -> ggez::GameResult {
                 .short("w")
                 .help("Number of aligned pieces required to win the game."),
         )
+        .arg(
+            Arg::with_name("gravity")
+                .takes_value(false)
+                .long("gravity")
+                .short("g")
+                .help("Simulate gravity when placing a piece."),
+        )
         .get_matches();
     let size = matches
         .value_of("size")
@@ -237,9 +260,10 @@ pub fn main() -> ggez::GameResult {
         .unwrap_or("3")
         .parse::<usize>()
         .expect("parsing win value");
+    let gravity = matches.is_present("gravity");
     let cb = ggez::ContextBuilder::new("Tick Tack Toe", "Jack Mordaunt")
         .window_setup(ggez::conf::WindowSetup::default().vsync(true));
     let (ctx, event_loop) = &mut cb.build()?;
-    let state = &mut MainState::new(size, win)?;
+    let state = &mut MainState::new(size, win, gravity)?;
     event::run(ctx, event_loop, state)
 }
