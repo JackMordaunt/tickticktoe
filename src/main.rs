@@ -23,35 +23,24 @@ impl Player {
     }
 }
 
-enum Axis {
-    Column(usize),
-    Row(usize),
-    LeftDiagonal,
-    RightDiagonal,
-}
+struct Axis((usize, usize), (usize, usize));
 
 struct MainState {
     winner: Option<(Player, Axis)>,
     turn: Player,
     grid: Vec<Vec<Option<Player>>>,
     size: usize,
-    // FIXME: Encapsulate scores counting / win detection in a type.
-    // TODO: Dynamic win detection: "n in a row" at any point on the grid.
-    row_scores: Vec<(usize, usize)>,
-    column_scores: Vec<(usize, usize)>,
-    diagonal_scores: Vec<(usize, usize)>,
+    win: usize,
 }
 
 impl MainState {
-    fn new(size: usize) -> ggez::GameResult<MainState> {
+    fn new(size: usize, win: usize) -> ggez::GameResult<MainState> {
         let s = MainState {
             winner: None,
             turn: Player::Naughts,
             grid: vec![vec![None; size]; size],
             size: size,
-            row_scores: vec![(0, 0); size],
-            column_scores: vec![(0, 0); size],
-            diagonal_scores: vec![(0, 0); 2],
+            win: win,
         };
         Ok(s)
     }
@@ -100,29 +89,45 @@ impl MainState {
     }
 
     fn build_throughline(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
-        if let Some((_, axis)) = &self.winner {
+        if let Some((_, Axis(start, end))) = &self.winner {
             let (w, h) = graphics::drawable_size(ctx);
-            let padding = 20.0;
             let stroke = 2.0;
-            let coords = match axis {
-                Axis::Column(n) => {
-                    let n = (*n) as f32;
-                    let column_size = w / self.size as f32;
-                    let x = column_size * n + column_size / 2.0 - stroke / 2.0;
-                    [[x, padding], [x, h - padding]]
-                }
-                Axis::Row(n) => {
-                    let n = (*n) as f32;
-                    let row_size = h / self.size as f32;
-                    let y = row_size * n + row_size / 2.0 - stroke / 2.0;
-                    [[padding, y], [w - padding, y]]
-                }
-                Axis::LeftDiagonal => [[padding, padding], [w - padding, h - padding]],
-                Axis::RightDiagonal => [[w - padding, padding], [padding, h - padding]],
-            };
+            let column_size = w / self.size as f32;
+            let row_size = h / self.size as f32;
+            let coords = [
+                [
+                    start.0 as f32 * column_size + column_size / 2.0 - stroke / 2.0,
+                    start.1 as f32 * row_size + row_size / 2.0 - stroke / 2.0,
+                ],
+                [
+                    end.0 as f32 * column_size + column_size / 2.0 - stroke / 2.0,
+                    end.1 as f32 * row_size + row_size / 2.0 - stroke / 2.0,
+                ],
+            ];
             mb.line(&coords, stroke, [1.0, 1.0, 1.0, 1.0].into())?;
+
         }
         Ok(())
+    }
+
+    // Checks for consecutive pieces owned by this player in a given direction,
+    // returning the count of pieces.
+    fn check_direction(&self, col: i32, row: i32, x: i32, y: i32, player: Player) -> usize {
+        let mut count = 0;
+        let mut col = col;
+        let mut row = row;
+        loop {
+            col += x;
+            row += y;
+            if self.size - 1 < col as usize || col < 0 || self.size - 1 < row as usize || row < 0 {
+                return count;
+            }
+            if self.grid[col as usize][row as usize] == Some(player) {
+                count += 1;
+            } else {
+                return count;
+            }
+        }
     }
 
 }
@@ -136,7 +141,7 @@ impl event::EventHandler for MainState {
     fn key_up_event(&mut self, _ctx: &mut Context, code: KeyCode, _keymods: KeyMods) {
         match code {
             KeyCode::Return => {
-                *self = MainState::new(self.size).unwrap();
+                *self = MainState::new(self.size, self.win).unwrap();
             }
             _ => {}
         }
@@ -153,53 +158,34 @@ impl event::EventHandler for MainState {
             return;
         }
         self.grid[col][row] = Some(self.turn);
-        // Mutate scores.
-        match self.turn {
-            Player::Crosses => {
-                self.row_scores[row].0 += 1;
-                self.column_scores[col].0 += 1;
-                if row == col {
-                    self.diagonal_scores[0].0 += 1;
-                }
-                if row + col == self.size.min(self.size) - 1 {
-                    self.diagonal_scores[1].0 += 1;
-                }
+        for (forward, backward) in &[
+            ((1, 0), (-1, 0)),
+            ((0, 1), (0, -1)),
+            ((1, 1), (-1, -1)),
+            ((-1, 1), (1, -1)),
+        ] {
+            let forward_count =
+                self.check_direction(col as i32, row as i32, forward.0, forward.1, self.turn);
+            let backward_count =
+                self.check_direction(col as i32, row as i32, backward.0, backward.1, self.turn);
+            let count = forward_count + backward_count + 1;
+            if count >= self.win {
+                self.winner = Some((
+                    Player::Crosses,
+                    // Calculate the coordinates of the start cell and the end cell.
+                    Axis(
+                        (
+                            (col as i32 + forward.0 * forward_count as i32).max(0) as usize,
+                            (row as i32 + forward.1 * forward_count as i32).max(0) as usize,
+                        ),
+                        (
+                            (col as i32 + backward.0 * backward_count as i32).max(0) as usize,
+                            (row as i32 + backward.1 * backward_count as i32).max(0) as usize,
+                        ),
+                    ),
+                ));
+                break;
             }
-            Player::Naughts => {
-                self.row_scores[row].1 += 1;
-                self.column_scores[col].1 += 1;
-                if row == col {
-                    self.diagonal_scores[0].1 += 1;
-                }
-                if row + col == self.size.min(self.size) - 1 {
-                    self.diagonal_scores[1].1 += 1;
-                }
-            }
-        };
-        // Check win condition.
-        if self.row_scores[row] == (self.size, 0) {
-            self.winner = Some((Player::Crosses, Axis::Row(row)));
-        }
-        if self.row_scores[row] == (0, self.size) {
-            self.winner = Some((Player::Naughts, Axis::Row(row)));
-        }
-        if self.column_scores[col] == (self.size, 0) {
-            self.winner = Some((Player::Crosses, Axis::Column(col)));
-        }
-        if self.column_scores[col] == (0, self.size) {
-            self.winner = Some((Player::Naughts, Axis::Column(col)));
-        }
-        if self.diagonal_scores[0] == (3, 0) {
-            self.winner = Some((Player::Crosses, Axis::LeftDiagonal));
-        }
-        if self.diagonal_scores[0] == (0, 3) {
-            self.winner = Some((Player::Naughts, Axis::LeftDiagonal));
-        }
-        if self.diagonal_scores[1] == (3, 0) {
-            self.winner = Some((Player::Crosses, Axis::RightDiagonal));
-        }
-        if self.diagonal_scores[1] == (0, 3) {
-            self.winner = Some((Player::Naughts, Axis::RightDiagonal));
         }
         self.turn = match self.turn {
             Player::Naughts => Player::Crosses,
@@ -226,16 +212,34 @@ use clap::{App, Arg};
 
 pub fn main() -> ggez::GameResult {
     let matches = App::new("Tick Tack Toe")
-        .arg(Arg::with_name("size")
-        .takes_value(true)
-        .long("size")
-        .short("s")
-        .help("Size of grid."))
+        .arg(
+            Arg::with_name("size")
+                .takes_value(true)
+                .long("size")
+                .short("s")
+                .help("Size of grid."),
+        )
+        .arg(
+            Arg::with_name("win")
+                .takes_value(true)
+                .long("win")
+                .short("w")
+                .help("Number of aligned pieces required to win the game."),
+        )
         .get_matches();
-    let size = matches.value_of("size").unwrap_or("3").parse::<usize>().expect("parsing size value");
+    let size = matches
+        .value_of("size")
+        .unwrap_or("3")
+        .parse::<usize>()
+        .expect("parsing size value");
+    let win = matches
+        .value_of("win")
+        .unwrap_or("3")
+        .parse::<usize>()
+        .expect("parsing win value");
     let cb = ggez::ContextBuilder::new("Tick Tack Toe", "Jack Mordaunt")
         .window_setup(ggez::conf::WindowSetup::default().vsync(true));
     let (ctx, event_loop) = &mut cb.build()?;
-    let state = &mut MainState::new(size)?;
+    let state = &mut MainState::new(size, win)?;
     event::run(ctx, event_loop, state)
 }
