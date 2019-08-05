@@ -152,8 +152,8 @@ impl event::EventHandler for MainState {
             return;
         }
         let (w, h) = graphics::drawable_size(ctx);
-        let col = (x / w * self.size as f32) as usize;
-        let mut row = (y / h * self.size as f32) as usize;
+        let col = (x / w * self.size as f32).min(self.size as f32 - 1.0) as usize;
+        let mut row = (y / h * self.size as f32).min(self.size as f32 - 1.0) as usize;
         if self.gravity {
             // If gravity is on, we place in the first open cell starting from
             // the last row.
