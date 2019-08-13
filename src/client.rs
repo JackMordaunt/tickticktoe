@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use ggez;
 use ggez::event::KeyCode;
 use ggez::event::{self, MouseButton};
@@ -9,7 +10,7 @@ use ggez::timer;
 use ggez::Context;
 
 use clap::{App, Arg};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json;
 
 impl Player {
@@ -148,55 +149,61 @@ impl State {
     }
 }
 
-use ws::{self, Handler, Result, Message, CloseCode, Sender, Handshake};
-
-use std::sync::Arc;
-use std::sync::Mutex;
+use ws::{self, Handler, Message, Result};
 
 struct Simulator {
-    state: Option<State>,
-    out: Option<Sender>,
+    states: Receiver<State>,
+    cmds: Sender<Command>,
 }
 
-impl Handler for Simulator {
+impl Handler for State {
     fn on_message(&mut self, msg: Message) -> Result<()> {
         if let Message::Text(txt) = msg {
-            let state: State = serde_json::from_str(&txt).unwrap();
-            self.state = Some(state);
+            *self = serde_json::from_str(&txt).unwrap();
         }
         Ok(())
     }
 }
 
+fn cmd_pump(out: ws::Sender, cmds: Receiver<Command>) {
+    std::thread::spawn(move || {
+        for cmd in cmds {
+            out.send(Message::Text(serde_json::to_string(&cmd).unwrap()))
+                .unwrap();
+        }
+    });
+}
+
 // This is our "server".
 impl Simulator {
-    // FIXME: Simulator needs to mutate it's state based on async messages
-    // from websocket connection, while also being accessed from Client. 
-    // Should Client own an Arc<Mutex<Simulator>>? 
-    fn new() -> Arc<Mutex<Self>> {
-        let mut sim = Arc::new(Mutex::new(Simulator {
-            out: None,
-            state: None,
-        }));
+    // new creates a facade that interacts with a websocket endpoint.
+    fn new() -> Self {
+        let (states_tx, states_rx) = unbounded();
+        let (cmd_tx, cmd_rx) = unbounded();
         std::thread::spawn(move || {
-            ws::connect("ws://127.0.0.1:1234", |out| {
-                sim.clone().get_mut().unwrap().out = Some(out);
-                sim
+            ws::connect("ws://127.0.0.1:1234", |out: ws::Sender| {
+                cmd_pump(out, cmd_rx.clone());
+                |msg| {
+                    if let Message::Text(txt) = msg {
+                        let state: State = serde_json::from_str(&txt).unwrap();
+                        states_tx.send(state).unwrap();
+                    }
+                    Ok(())
+                }
             })
             .unwrap();
         });
-        sim
-    }
-    // Simulate state changes based on commands.
-    // This api allows additional commands without breaking the api.
-    fn push(&mut self, cmd: Command) {
-        if let Some(out) = self.out {
-            out.send(Message::Text(serde_json::to_string(&cmd).unwrap())).unwrap();
+        Simulator {
+            cmds: cmd_tx,
+            states: states_rx,
         }
+    }
+    fn push(&mut self, cmd: Command) {
+        self.cmds.send(cmd).unwrap();
     }
 
     fn state(&mut self) -> Option<State> {
-        self.state
+        self.states.try_recv().ok()
     }
 }
 
@@ -276,9 +283,11 @@ fn main() -> ggez::GameResult {
     let cb = ggez::ContextBuilder::new("Tick Tack Toe", "Jack Mordaunt")
         .window_setup(ggez::conf::WindowSetup::default().vsync(true));
     let state = State::new(size, win, gravity);
+    // FIXME: If server controls game state then we needn't setup the state
+    // here.
     let client = &mut Client {
         sim: Simulator::new(),
-        state: state, // State to render from.
+        state: state,
     };
     let (ctx, event_loop) = &mut cb.build()?;
     event::run(ctx, event_loop, client)
