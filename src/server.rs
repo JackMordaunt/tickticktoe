@@ -1,5 +1,4 @@
-use std::thread;
-use ws::{self, CloseCode, Handler, Message, Result, Sender};
+use ws::{self, Handler, Message, Result, Sender};
 
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -44,35 +43,6 @@ impl State {
             } else {
                 return count;
             }
-        }
-    }
-}
-
-struct Simulator {
-    state: State,
-    dirty: bool,
-}
-
-// This is our "server".
-impl Simulator {
-    // Simulate state changes based on commands.
-    // This api allows additional commands without breaking the api.
-    fn push(&mut self, cmd: Command) {
-        match cmd {
-            Command::Restart => {
-                self.state = State::new(self.state.size, self.state.win, self.state.gravity);
-            }
-            Command::Place(col, row) => {}
-        }
-        self.dirty = true;
-    }
-
-    fn state(&mut self) -> Option<State> {
-        if self.dirty {
-            self.dirty = false;
-            Some(self.state.clone())
-        } else {
-            None
         }
     }
 }
@@ -182,8 +152,6 @@ impl Handler for Server {
             serde_json::to_string_pretty(&self.state).unwrap(),
         ))
     }
-
-    fn on_close(&mut self, code: CloseCode, reason: &str) {}
 }
 
 fn main() {

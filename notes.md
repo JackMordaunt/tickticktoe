@@ -20,3 +20,7 @@
 - Simulate game rules
 - Can be executed on local or remote machine
 - Creates state delta
+
+## TODO
+
+- Put common code into module (eg, `State` and game simulation)
