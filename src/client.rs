@@ -9,15 +9,8 @@ use ggez::timer;
 use ggez::Context;
 
 use clap::{App, Arg};
-
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum Player {
-    Naughts,
-    Crosses,
-}
+use serde::{Serialize, Deserialize};
+use serde_json;
 
 impl Player {
     fn color(&self) -> graphics::Color {
@@ -29,7 +22,7 @@ impl Player {
 }
 
 // State seen by the client, used to render the game.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct State {
     winner: Option<(Player, ((usize, usize), (usize, usize)))>,
     turn: Player,
@@ -39,24 +32,22 @@ struct State {
     gravity: bool,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+enum Player {
+    Naughts,
+    Crosses,
+}
+
+#[derive(Serialize, Deserialize)]
 enum Command {
     Place(u32, u32),
     Restart,
 }
 
-// Simulator decouples the game simulation from input processing and rendering.
-// Simulation could occur on the host machine or over a network (ie, on a server).
-trait Simulator {
-    // Push commands to the simulator. Driven by the client.
-    fn push(&mut self, cmd: Command);
-    // Receive the updated state from the simulator. Driven by server.
-    fn state_changes(&mut self) -> Receiver<State>;
-}
-
 // Client transforms hardware events into simulation commands,
 // and renders the game state to the screen.
 struct Client {
-    sim: Box<Simulator>,
+    sim: Simulator,
     state: State,
 }
 
@@ -157,108 +148,63 @@ impl State {
     }
 }
 
-struct LocalSimulator {
-    state: State,
-    state_changes: Option<Sender<State>>,
+use ws::{self, Handler, Result, Message, CloseCode, Sender, Handshake};
+
+use std::sync::Arc;
+use std::sync::Mutex;
+
+struct Simulator {
+    state: Option<State>,
+    out: Option<Sender>,
+}
+
+impl Handler for Simulator {
+    fn on_message(&mut self, msg: Message) -> Result<()> {
+        if let Message::Text(txt) = msg {
+            let state: State = serde_json::from_str(&txt).unwrap();
+            self.state = Some(state);
+        }
+        Ok(())
+    }
 }
 
 // This is our "server".
-impl Simulator for LocalSimulator {
+impl Simulator {
+    // FIXME: Simulator needs to mutate it's state based on async messages
+    // from websocket connection, while also being accessed from Client. 
+    // Should Client own an Arc<Mutex<Simulator>>? 
+    fn new() -> Arc<Mutex<Self>> {
+        let mut sim = Arc::new(Mutex::new(Simulator {
+            out: None,
+            state: None,
+        }));
+        std::thread::spawn(move || {
+            ws::connect("ws://127.0.0.1:1234", |out| {
+                sim.clone().get_mut().unwrap().out = Some(out);
+                sim
+            })
+            .unwrap();
+        });
+        sim
+    }
     // Simulate state changes based on commands.
     // This api allows additional commands without breaking the api.
     fn push(&mut self, cmd: Command) {
-        match cmd {
-            Command::Restart => {
-                self.state = State::new(self.state.size, self.state.win, self.state.gravity);
-            }
-            Command::Place(col, row) => {
-                if self.state.winner.is_some() {
-                    return;
-                }
-                let col = col as usize;
-                let mut row = row as usize;
-                if self.state.gravity {
-                    // If gravity is on, we place in the first open cell starting from
-                    // the last row.
-                    // If the column is completely full, then the click is a non-move.
-                    if self.state.grid[col][0].is_some() {
-                        return;
-                    }
-                    for ii in (0..self.state.grid[col].len()).rev() {
-                        if self.state.grid[col][ii].is_none() {
-                            self.state.grid[col][ii] = Some(self.state.turn);
-                            row = ii; // Capture the real row value.
-                            break;
-                        }
-                    }
-                } else {
-                    if self.state.grid[col][row].is_some() {
-                        return;
-                    }
-                    self.state.grid[col][row] = Some(self.state.turn);
-                }
-                for (forward, backward) in &[
-                    ((1, 0), (-1, 0)),
-                    ((0, 1), (0, -1)),
-                    ((1, 1), (-1, -1)),
-                    ((-1, 1), (1, -1)),
-                ] {
-                    let forward_count = self.state.check_direction(
-                        col as i32,
-                        row as i32,
-                        forward.0,
-                        forward.1,
-                        self.state.turn,
-                    );
-                    let backward_count = self.state.check_direction(
-                        col as i32,
-                        row as i32,
-                        backward.0,
-                        backward.1,
-                        self.state.turn,
-                    );
-                    let count = forward_count + backward_count + 1;
-                    if count >= self.state.win {
-                        self.state.winner = Some((
-                            Player::Crosses,
-                            // Calculate the coordinates of the start cell and the end cell.
-                            (
-                                (
-                                    (col as i32 + forward.0 * forward_count as i32).max(0) as usize,
-                                    (row as i32 + forward.1 * forward_count as i32).max(0) as usize,
-                                ),
-                                (
-                                    (col as i32 + backward.0 * backward_count as i32).max(0)
-                                        as usize,
-                                    (row as i32 + backward.1 * backward_count as i32).max(0)
-                                        as usize,
-                                ),
-                            ),
-                        ));
-                        break;
-                    }
-                }
-                self.state.turn = match self.state.turn {
-                    Player::Naughts => Player::Crosses,
-                    Player::Crosses => Player::Naughts,
-                };
-            }
-        }
-        // self.state_changed(self.state.clone());
-        if let Some(sender) = self.state_changes.clone() {
-            sender.send(self.state.clone()).unwrap();
+        if let Some(out) = self.out {
+            out.send(Message::Text(serde_json::to_string(&cmd).unwrap())).unwrap();
         }
     }
 
-    fn state_changes(&mut self) -> Receiver<State> {
-        let (sx, rx) = channel();
-        self.state_changes = Some(sx);
-        rx
+    fn state(&mut self) -> Option<State> {
+        self.state
     }
 }
 
 impl event::EventHandler for Client {
     fn update(&mut self, _ctx: &mut ggez::Context) -> ggez::GameResult {
+        if let Some(state) = self.sim.state() {
+            self.state = state;
+        }
         timer::yield_now();
         Ok(())
     }
@@ -329,23 +275,11 @@ fn main() -> ggez::GameResult {
     let gravity = matches.is_present("gravity");
     let cb = ggez::ContextBuilder::new("Tick Tack Toe", "Jack Mordaunt")
         .window_setup(ggez::conf::WindowSetup::default().vsync(true));
+    let state = State::new(size, win, gravity);
+    let client = &mut Client {
+        sim: Simulator::new(),
+        state: state, // State to render from.
+    };
     let (ctx, event_loop) = &mut cb.build()?;
-    // let state = State::new(size, win, gravity);
-    // let mut sim = LocalSimulator {
-    //     state: state.clone(),
-    //     state_changes: None,
-    // };
-    // let client = &mut Client {
-    //     sim: Box::new(sim),
-    //     state: state,
-    // };
-    // let client = Arc::new(client);
-    // let (tx, rx) = channel();
-    // sim.state_changes = Some(tx);
-    // std::thread::spawn(move || {
-    //     for state in rx {
-    //         client.state = state;
-    //     }
-    // });
     event::run(ctx, event_loop, client)
 }
