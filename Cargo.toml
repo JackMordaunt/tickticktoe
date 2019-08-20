@@ -18,6 +18,10 @@ path = "src/client.rs"
 name = "ticktacktoe"
 path = "src/main.rs"
 
+[lib]
+name = "ticktacktoe"
+path = "src/lib.rs"
+
 [dependencies]
 ggez = "0.5.1"
 clap = "2.33.0"

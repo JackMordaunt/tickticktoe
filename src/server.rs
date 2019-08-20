@@ -8,67 +8,7 @@ use std::thread;
 use uuid::Uuid;
 use ws::{self, Factory, Handler, Message, Result, Sender};
 
-// State seen by the client, used to render the game.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct State {
-    winner: Option<(Player, ((usize, usize), (usize, usize)))>,
-    turn: Player,
-    grid: Vec<Vec<Option<Player>>>,
-    size: usize,
-    win: usize,
-    gravity: bool,
-}
-
-impl State {
-    fn new(size: usize, win: usize, gravity: bool) -> Self {
-        State {
-            winner: None,
-            turn: Player::Naughts,
-            grid: vec![vec![None; size]; size],
-            size: size,
-            win: win,
-            gravity: gravity,
-        }
-    }
-
-    // Checks for consecutive pieces owned by this player in a given direction,
-    // returning the count of pieces.
-    fn check_direction(&self, col: i32, row: i32, x: i32, y: i32, player: Player) -> usize {
-        let mut count = 0;
-        let mut col = col;
-        let mut row = row;
-        loop {
-            col += x;
-            row += y;
-            if self.size - 1 < col as usize || col < 0 || self.size - 1 < row as usize || row < 0 {
-                return count;
-            }
-            if self.grid[col as usize][row as usize] == Some(player) {
-                count += 1;
-            } else {
-                return count;
-            }
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-enum Player {
-    Naughts,
-    Crosses,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-enum Command {
-    Place(u32, u32),
-    Restart,
-
-    // Lobby commands.
-    StartGame,
-    SetWinCondition(u32),
-    SetGridSize(u32),
-    SetGravity(bool),
-}
+use ticktacktoe::{State, Command, Player};
 
 #[derive(Clone)]
 struct Game {

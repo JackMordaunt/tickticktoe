@@ -9,46 +9,23 @@ use ggez::graphics::{self, DrawMode, MeshBuilder};
 use ggez::input::keyboard::KeyMods;
 use ggez::timer;
 use ggez::Context;
-use serde::{Deserialize, Serialize};
 use serde_json;
 use ws::{self, Handler, Message, Result};
 
-impl Player {
-    fn color(&self) -> graphics::Color {
+use ticktacktoe::{State, Player, Command};
+
+// AsColor associates a Color to an arbitrary type.
+trait AsColor {
+    fn as_color(&self) -> graphics::Color;
+}
+
+impl AsColor for Player {
+    fn as_color(&self) -> graphics::Color {
         match self {
             Player::Naughts => [1.0, 0.647, 0.0, 1.0].into(),
             Player::Crosses => [0.0, 0.35, 1.0, 1.0].into(),
         }
     }
-}
-
-// State seen by the client, used to render the game.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct State {
-    winner: Option<(Player, ((usize, usize), (usize, usize)))>,
-    turn: Player,
-    grid: Vec<Vec<Option<Player>>>,
-    size: u32,
-    win: u32,
-    gravity: bool,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-enum Player {
-    Naughts,
-    Crosses,
-}
-
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
-enum Command {
-    Place(u32, u32),
-    Restart,
-
-    // Lobby commands.
-    StartGame,
-    SetWinCondition(u32),
-    SetGridSize(u32),
-    SetGravity(bool),
 }
 
 // Client transforms hardware events into simulation commands,
@@ -58,27 +35,32 @@ struct Client {
     state: Option<State>,
 }
 
-impl State {
-    fn new(size: u32, win: u32, gravity: bool) -> Self {
-        State {
-            winner: None,
-            turn: Player::Naughts,
-            grid: vec![vec![None; size as usize]; size as usize],
-            size: size,
-            win: win,
-            gravity: gravity,
+// Renderer renders the game state to a MeshBuilder which can be drawn
+// by ggez.
+struct Renderer {
+    pub state: State,
+}
+
+impl Renderer {
+
+    pub fn draw(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
+        self.build_grid(ctx, mb)?;
+        self.build_players(ctx, mb)?;
+        if self.state.winner.is_some() {
+            self.build_throughline(ctx, mb)?;
         }
+        Ok(())
     }
 
     fn build_grid(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
-        let ((w, h), stroke, color) = (graphics::drawable_size(ctx), 2.0, self.turn.color());
-        let column_width = w / self.size as f32;
-        for ii in 1..self.size {
+        let ((w, h), stroke, color) = (graphics::drawable_size(ctx), 2.0, self.state.turn.as_color());
+        let column_width = w / self.state.size as f32;
+        for ii in 1..self.state.size {
             let offset = column_width * ii as f32;
             mb.line(&[[offset, 0.0], [offset, h]], stroke, color)?;
         }
-        let row_height = h / self.size as f32;
-        for ii in 1..self.size {
+        let row_height = h / self.state.size as f32;
+        for ii in 1..self.state.size {
             let offset = row_height * ii as f32;
             mb.line(&[[0.0, offset], [w, offset]], stroke, color)?;
         }
@@ -87,17 +69,17 @@ impl State {
 
     fn build_players(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
         let (w, h) = graphics::drawable_size(ctx);
-        let column_width = w / self.size as f32;
-        let row_height = h / self.size as f32;
+        let column_width = w / self.state.size as f32;
+        let row_height = h / self.state.size as f32;
         let size = (column_width + row_height) / 2.0 / 4.0;
-        for (ii, col) in self.grid.iter().enumerate() {
+        for (ii, col) in self.state.grid.iter().enumerate() {
             for (jj, cell) in col.iter().enumerate() {
                 if let Some(player) = cell {
                     let (x, y) = (
                         (column_width) * ((ii + 1) as f32) - (column_width / 2.0),
                         (row_height) * ((jj + 1) as f32) - (row_height / 2.0),
                     );
-                    let color = player.color();
+                    let color = player.as_color();
                     match player {
                         Player::Naughts => {
                             mb.circle(DrawMode::stroke(2.0), [x, y], size, 0.1, color);
@@ -114,11 +96,11 @@ impl State {
     }
 
     fn build_throughline(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
-        if let Some((_, (start, end))) = &self.winner {
+        if let Some((_, (start, end))) = &self.state.winner {
             let (w, h) = graphics::drawable_size(ctx);
             let stroke = 2.0;
-            let column_size = w / self.size as f32;
-            let row_size = h / self.size as f32;
+            let column_size = w / self.state.size as f32;
+            let row_size = h / self.state.size as f32;
             let coords = [
                 [
                     start.0 as f32 * column_size + column_size / 2.0 - stroke / 2.0,
@@ -133,6 +115,7 @@ impl State {
         }
         Ok(())
     }
+
 }
 
 struct Simulator {
@@ -140,10 +123,14 @@ struct Simulator {
     cmds: Sender<Command>,
 }
 
-impl Handler for State {
+struct StateUpdater {
+    state: State,
+}
+
+impl Handler for StateUpdater {
     fn on_message(&mut self, msg: Message) -> Result<()> {
         if let Message::Text(txt) = msg {
-            *self = serde_json::from_str(&txt).unwrap();
+            self.state = serde_json::from_str(&txt).unwrap();
         }
         Ok(())
     }
@@ -161,7 +148,6 @@ fn cmd_pump(out: ws::Sender, cmds: Receiver<Command>) {
 // This is our "server".
 impl Simulator {
     // new creates a facade that interacts with a websocket endpoint.
-    // TODO: Connect game parameters to cli flags.
     fn new(addr: &str, size: u32, win: u32, gravity: bool) -> Self {
         let (states_tx, states_rx) = unbounded();
         let (cmd_tx, cmd_rx) = unbounded();
@@ -199,7 +185,8 @@ impl Simulator {
     }
 
     fn state(&mut self) -> Option<State> {
-        self.states.try_recv().ok()
+        // Grab only the latest state update.
+        self.states.try_iter().last()
     }
 }
 
@@ -236,14 +223,11 @@ impl event::EventHandler for Client {
         graphics::clear(ctx, [0.0, 0.0, 0.0, 0.0].into());
         if let Some(state) = self.state.take() {
             let mut mb = MeshBuilder::new();
-            state.build_grid(ctx, &mut mb)?;
-            state.build_players(ctx, &mut mb)?;
-            if state.winner.is_some() {
-                state.build_throughline(ctx, &mut mb)?;
-            }
+            let r = Renderer{state};
+            r.draw(ctx, &mut mb)?;
             let mesh = mb.build(ctx)?;
             graphics::draw(ctx, &mesh, graphics::DrawParam::default())?;
-            self.state = Some(state);
+            self.state = Some(r.state);
         }
         graphics::present(ctx)?;
         Ok(())
