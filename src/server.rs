@@ -1,4 +1,5 @@
 #![allow(dead_code, unused_imports)]
+use clap::{App, Arg};
 use crossbeam_channel::{unbounded, Receiver as ChanReceiver, Sender as ChanSender};
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -8,7 +9,7 @@ use std::thread;
 use uuid::Uuid;
 use ws::{self, Factory, Handler, Message, Result, Sender};
 
-use ticktacktoe::{State, Command, Player};
+use ticktacktoe::{Command, Player, State};
 
 #[derive(Clone)]
 struct Game {
@@ -254,6 +255,17 @@ impl Default for GameSettings {
 }
 
 fn main() {
+    let matches = App::new("ticktacktoe-server")
+        .about("Server for ticktacktoe game.")
+        .author("Jack Mordaunt <jackmordaunt@gmail.com>")
+        .arg(
+            Arg::with_name("address")
+                .long("address")
+                .short("a")
+                .required(true)
+                .takes_value(true),
+        )
+        .get_matches();
     let mut lobby = SharedLobby {
         state: Arc::new(Mutex::new(Lobby {
             players: HashMap::new(),
@@ -262,5 +274,8 @@ fn main() {
             game: None,
         })),
     };
-    ws::listen("25.32.94.215:8080", move |out| lobby.connection_made(out)).unwrap();
+    ws::listen(matches.value_of("address").unwrap(), move |out| {
+        lobby.connection_made(out)
+    })
+    .unwrap();
 }

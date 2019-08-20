@@ -12,7 +12,7 @@ use ggez::Context;
 use serde_json;
 use ws::{self, Handler, Message, Result};
 
-use ticktacktoe::{State, Player, Command};
+use ticktacktoe::{Command, Player, State};
 
 // AsColor associates a Color to an arbitrary type.
 trait AsColor {
@@ -42,7 +42,6 @@ struct Renderer {
 }
 
 impl Renderer {
-
     pub fn draw(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
         self.build_grid(ctx, mb)?;
         self.build_players(ctx, mb)?;
@@ -53,7 +52,11 @@ impl Renderer {
     }
 
     fn build_grid(&self, ctx: &ggez::Context, mb: &mut MeshBuilder) -> ggez::GameResult {
-        let ((w, h), stroke, color) = (graphics::drawable_size(ctx), 2.0, self.state.turn.as_color());
+        let ((w, h), stroke, color) = (
+            graphics::drawable_size(ctx),
+            2.0,
+            self.state.turn.as_color(),
+        );
         let column_width = w / self.state.size as f32;
         for ii in 1..self.state.size {
             let offset = column_width * ii as f32;
@@ -115,7 +118,6 @@ impl Renderer {
         }
         Ok(())
     }
-
 }
 
 struct Simulator {
@@ -223,7 +225,7 @@ impl event::EventHandler for Client {
         graphics::clear(ctx, [0.0, 0.0, 0.0, 0.0].into());
         if let Some(state) = self.state.take() {
             let mut mb = MeshBuilder::new();
-            let r = Renderer{state};
+            let r = Renderer { state };
             r.draw(ctx, &mut mb)?;
             let mesh = mb.build(ctx)?;
             graphics::draw(ctx, &mesh, graphics::DrawParam::default())?;
@@ -258,7 +260,7 @@ fn main() -> ggez::GameResult {
                 .help("Simulate gravity when placing a piece."),
         )
         .arg(
-            Arg::with_name("addr")
+            Arg::with_name("address")
                 .required(true)
                 .takes_value(true)
                 .long("address")
@@ -276,7 +278,7 @@ fn main() -> ggez::GameResult {
         .unwrap_or("3")
         .parse::<u32>()
         .expect("parsing win value");
-    let address = matches.value_of("addr").unwrap();
+    let address = matches.value_of("address").unwrap();
     let gravity = matches.is_present("gravity");
     let cb = ggez::ContextBuilder::new("Tick Tack Toe", "Jack Mordaunt")
         .window_setup(ggez::conf::WindowSetup::default().vsync(true));
@@ -285,7 +287,7 @@ fn main() -> ggez::GameResult {
     // here.
     // Need to delay use of state object until connection to server has been
     // established and state has been copied over to this client.
-    let sim = Simulator::new(&format!("ws://{}:8080", address), size, win, gravity);
+    let sim = Simulator::new(&format!("ws://{}", address), size, win, gravity);
     let client = &mut Client {
         sim: sim,
         state: None,
