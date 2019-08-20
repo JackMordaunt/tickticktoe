@@ -1,9 +1,12 @@
-use ws::{self, Factory, Handler, Message, Result, Sender};
-use crossbeam_channel::{unbounded, Sender as ChanSender};
+#![allow(dead_code, unused_imports)]
+use crossbeam_channel::{unbounded, Receiver as ChanReceiver, Sender as ChanSender};
 use serde::{Deserialize, Serialize};
 use serde_json;
-use uuid::Uuid;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::thread;
+use uuid::Uuid;
+use ws::{self, Factory, Handler, Message, Result, Sender};
 
 // State seen by the client, used to render the game.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -55,40 +58,26 @@ enum Player {
     Crosses,
 }
 
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 enum Command {
     Place(u32, u32),
     Restart,
+
+    // Lobby commands.
+    StartGame,
+    SetWinCondition(u32),
+    SetGridSize(u32),
+    SetGravity(bool),
 }
 
-struct Connection {
-    // id: Uuid,
-    // out: Sender,
-    // state: State,
-    cmds: ChanSender<Command>,
-}
-
-impl Handler for Connection {
-    fn on_message(&mut self, msg: Message) -> Result<()> {
-        if let Message::Text(txt) = msg {
-            let cmd: Command = serde_json::from_str(&txt).unwrap();
-            self.cmds.send(cmd).unwrap();
-        }
-        Ok(())
-        // self.out.send(Message::Text(
-        //     serde_json::to_string_pretty(&self.state).unwrap(),
-        // ))
-    }
-}
-
-struct Server {
+#[derive(Clone)]
+struct Game {
     state: State,
-    players: Vec<Sender>,
-    spectators: Vec<Sender>,
 }
 
-impl Server {
-    fn cmd(&mut self, cmd: Command) {
+impl Game {
+    fn simulate(&mut self, cmd: Command) {
+        println!("simulate: {:?}", cmd);
         match cmd {
             Command::Place(col, row) => {
                 if self.state.winner.is_some() {
@@ -143,10 +132,8 @@ impl Server {
                             // Calculate the coordinates of the start cell and the end cell.
                             (
                                 (
-                                    (col as i32 + forward.0 * forward_count as i32).max(0)
-                                        as usize,
-                                    (row as i32 + forward.1 * forward_count as i32).max(0)
-                                        as usize,
+                                    (col as i32 + forward.0 * forward_count as i32).max(0) as usize,
+                                    (row as i32 + forward.1 * forward_count as i32).max(0) as usize,
                                 ),
                                 (
                                     (col as i32 + backward.0 * backward_count as i32).max(0)
@@ -167,48 +154,173 @@ impl Server {
             Command::Restart => {
                 self.state = State::new(self.state.size, self.state.win, self.state.gravity);
             }
+            _ => {}
         };
     }
 }
 
-impl Factory for Server {
-    type Handler = Connection;
+#[derive(Clone)]
+struct Client {
+    id: Uuid,
+    out: Sender,
+    lobby: Arc<Mutex<Lobby>>,
+}
 
+#[derive(Clone, Serialize, Deserialize)]
+struct ClientMessage {
+    id: Uuid,
+    cmd: Command,
+}
+
+// Lobby contains the state for a pre-game lobby.
+struct Lobby {
+    players: HashMap<Uuid, Player>,
+    spectators: Vec<Client>,
+    settings: GameSettings,
+    game: Option<Game>,
+}
+
+struct SharedLobby {
+    state: Arc<Mutex<Lobby>>,
+}
+
+// GameSettings contains the params required to start a game.
+struct GameSettings {
+    grid_size: Option<u32>,
+    win_condition: Option<u32>,
+    gravity: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+enum LobbyCommand {
+    StartGame,
+    SetWinCondition(u32),
+    SetGridSize(u32),
+    SetGravity(bool),
+}
+
+impl Factory for SharedLobby {
+    type Handler = Client;
+
+    // A new connection comes in.
+    // Each new connection will be a client.
     fn connection_made(&mut self, out: Sender) -> Self::Handler {
-        if self.players.len() < 2 {
-            self.players[self.players.len()] = out;
-        } else {
-            self.spectators.push(out);
-        }
-        let (tx, rx) = unbounded();
-        // FIXME: Not sure how to get back commands from the connections.
-        // Need some abstraction that handles multiple connections, like a "room".
-        thread::spawn(move || {
-            for cmd in rx {
-                self.cmd(cmd);
+        let client = Client {
+            id: Uuid::new_v4(),
+            out: out,
+            lobby: self.state.clone(),
+        };
+        if let Ok(mut lobby) = self.state.lock() {
+            let player_count = lobby.players.len();
+            if player_count < 1 {
+                lobby.players.insert(client.id, Player::Crosses);
+            } else if player_count < 2 {
+                lobby.players.insert(client.id, Player::Naughts);
             }
-        });
-        Connection {
-            // id: Uuid::new_v4(),
-            // out: out,
-            // state: self.state.clone(),
-            cmds: tx,
+            lobby.spectators.push(client.clone());
+        }
+        client
+    }
+}
+
+impl Lobby {
+    fn apply(&mut self, msg: ClientMessage) -> Result<()> {
+        let ClientMessage { id, cmd } = msg;
+        if let Some(player) = self.players.get(&id) {
+            println!("{:?}.{:?}", player, cmd);
+            if let Some(mut game) = self.game.take() {
+                if *player == game.state.turn {
+                    game.simulate(cmd);
+                    let state = game.state.clone();
+                    for client in &self.spectators {
+                        client
+                            .out
+                            .send(Message::Text(serde_json::to_string(&state).unwrap()))?;
+                    }
+                }
+                self.game = Some(game);
+            } else {
+                match cmd {
+                    Command::SetWinCondition(win_condition) => {
+                        self.settings.win_condition = Some(win_condition);
+                    }
+                    Command::SetGridSize(grid_size) => {
+                        self.settings.grid_size = Some(grid_size);
+                    }
+                    Command::SetGravity(gravity) => {
+                        self.settings.gravity = Some(gravity);
+                    }
+                    Command::StartGame => {
+                        if self.settings.is_valid() && self.game.is_none() {
+                            self.game = Some(Game {
+                                state: State::new(
+                                    self.settings.grid_size.unwrap() as usize,
+                                    self.settings.win_condition.unwrap() as usize,
+                                    self.settings.gravity.unwrap(),
+                                ),
+                            });
+                        }
+                    }
+                    _ => {
+                        println!("ignoring command: {:?}", cmd);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Handler for Client {
+    fn on_message(&mut self, msg: Message) -> Result<()> {
+        if let Ok(mut lobby) = self.lobby.lock() {
+            if let Message::Text(txt) = msg {
+                if let Ok(cmd) = serde_json::from_str::<Command>(&txt) {
+                    lobby.apply(ClientMessage {
+                        id: self.id,
+                        cmd: cmd,
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl GameSettings {
+    // Valid if all fields are Some.
+    fn is_valid(&self) -> bool {
+        if let None = self.grid_size {
+            return false;
+        }
+        if let None = self.win_condition {
+            return false;
+        }
+        if let None = self.gravity {
+            return false;
+        }
+        true
+    }
+}
+
+impl Default for GameSettings {
+    fn default() -> Self {
+        GameSettings {
+            grid_size: None,
+            win_condition: None,
+            gravity: None,
         }
     }
 }
 
 fn main() {
-    let svr = Server {
-        state: State::new(8, 4, true),
-        players: vec![],
-        spectators: vec![],
+    let mut lobby = SharedLobby {
+        state: Arc::new(Mutex::new(Lobby {
+            players: HashMap::new(),
+            spectators: vec![],
+            settings: GameSettings::default(),
+            game: None,
+        })),
     };
-    ws::WebSocket::new(svr)
-        .unwrap()
-        .bind("127.0.0.1:1234")
-        .unwrap()
-        .run()
-        .unwrap();
-    // ws::listen("127.0.0.1:1234", svr)
-    // .unwrap();
+    ws::listen("25.32.94.215:8080", move |out| lobby.connection_made(out)).unwrap();
 }

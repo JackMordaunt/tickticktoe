@@ -1,5 +1,6 @@
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
 
+use clap::{App, Arg};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use ggez;
 use ggez::event::KeyCode;
@@ -8,8 +9,6 @@ use ggez::graphics::{self, DrawMode, MeshBuilder};
 use ggez::input::keyboard::KeyMods;
 use ggez::timer;
 use ggez::Context;
-
-use clap::{App, Arg};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use ws::{self, Handler, Message, Result};
@@ -29,8 +28,8 @@ struct State {
     winner: Option<(Player, ((usize, usize), (usize, usize)))>,
     turn: Player,
     grid: Vec<Vec<Option<Player>>>,
-    size: usize,
-    win: usize,
+    size: u32,
+    win: u32,
     gravity: bool,
 }
 
@@ -40,48 +39,34 @@ enum Player {
     Crosses,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 enum Command {
     Place(u32, u32),
     Restart,
+
+    // Lobby commands.
+    StartGame,
+    SetWinCondition(u32),
+    SetGridSize(u32),
+    SetGravity(bool),
 }
 
 // Client transforms hardware events into simulation commands,
 // and renders the game state to the screen.
 struct Client {
     sim: Simulator,
-    state: State,
+    state: Option<State>,
 }
 
 impl State {
-    fn new(size: usize, win: usize, gravity: bool) -> Self {
+    fn new(size: u32, win: u32, gravity: bool) -> Self {
         State {
             winner: None,
             turn: Player::Naughts,
-            grid: vec![vec![None; size]; size],
+            grid: vec![vec![None; size as usize]; size as usize],
             size: size,
             win: win,
             gravity: gravity,
-        }
-    }
-
-    // Checks for consecutive pieces owned by this player in a given direction,
-    // returning the count of pieces.
-    fn check_direction(&self, col: i32, row: i32, x: i32, y: i32, player: Player) -> usize {
-        let mut count = 0;
-        let mut col = col;
-        let mut row = row;
-        loop {
-            col += x;
-            row += y;
-            if self.size - 1 < col as usize || col < 0 || self.size - 1 < row as usize || row < 0 {
-                return count;
-            }
-            if self.grid[col as usize][row as usize] == Some(player) {
-                count += 1;
-            } else {
-                return count;
-            }
         }
     }
 
@@ -176,11 +161,22 @@ fn cmd_pump(out: ws::Sender, cmds: Receiver<Command>) {
 // This is our "server".
 impl Simulator {
     // new creates a facade that interacts with a websocket endpoint.
-    fn new() -> Self {
+    // TODO: Connect game parameters to cli flags.
+    fn new(addr: &str, size: u32, win: u32, gravity: bool) -> Self {
         let (states_tx, states_rx) = unbounded();
         let (cmd_tx, cmd_rx) = unbounded();
+        let addr = addr.to_owned();
         std::thread::spawn(move || {
-            ws::connect("ws://127.0.0.1:1234", |out: ws::Sender| {
+            ws::connect(addr, |out: ws::Sender| {
+                for cmd in vec![
+                    Command::SetGridSize(size),
+                    Command::SetWinCondition(win),
+                    Command::SetGravity(gravity),
+                    Command::StartGame,
+                ] {
+                    out.send(Message::Text(serde_json::to_string(&cmd).unwrap()))
+                        .unwrap();
+                }
                 cmd_pump(out, cmd_rx.clone());
                 |msg| {
                     if let Message::Text(txt) = msg {
@@ -197,6 +193,7 @@ impl Simulator {
             states: states_rx,
         }
     }
+
     fn push(&mut self, cmd: Command) {
         self.cmds.send(cmd).unwrap();
     }
@@ -209,7 +206,7 @@ impl Simulator {
 impl event::EventHandler for Client {
     fn update(&mut self, _ctx: &mut ggez::Context) -> ggez::GameResult {
         if let Some(state) = self.sim.state() {
-            self.state = state;
+            self.state = Some(state);
         }
         timer::yield_now();
         Ok(())
@@ -223,22 +220,31 @@ impl event::EventHandler for Client {
     }
 
     fn mouse_button_up_event(&mut self, ctx: &mut Context, _btn: MouseButton, x: f32, y: f32) {
-        let (w, h) = graphics::drawable_size(ctx);
-        let col = (x / w * self.state.size as f32).min(self.state.size as f32 - 1.0) as u32;
-        let row = (y / h * self.state.size as f32).min(self.state.size as f32 - 1.0) as u32;
-        self.sim.push(Command::Place(col, row));
+        if let Some(state) = self.state.take() {
+            let (w, h) = graphics::drawable_size(ctx);
+            let col = (x / w * state.size as f32).min(state.size as f32 - 1.0) as u32;
+            let row = (y / h * state.size as f32).min(state.size as f32 - 1.0) as u32;
+            self.state = Some(state);
+            self.sim.push(Command::Place(col, row));
+        } else {
+            // FIXME: Hack to provoke server to give us state.
+            self.sim.push(Command::Place(0, 0));
+        }
     }
 
     fn draw(&mut self, ctx: &mut ggez::Context) -> ggez::GameResult {
         graphics::clear(ctx, [0.0, 0.0, 0.0, 0.0].into());
-        let mut mb = MeshBuilder::new();
-        self.state.build_grid(ctx, &mut mb)?;
-        self.state.build_players(ctx, &mut mb)?;
-        if self.state.winner.is_some() {
-            self.state.build_throughline(ctx, &mut mb)?;
+        if let Some(state) = self.state.take() {
+            let mut mb = MeshBuilder::new();
+            state.build_grid(ctx, &mut mb)?;
+            state.build_players(ctx, &mut mb)?;
+            if state.winner.is_some() {
+                state.build_throughline(ctx, &mut mb)?;
+            }
+            let mesh = mb.build(ctx)?;
+            graphics::draw(ctx, &mesh, graphics::DrawParam::default())?;
+            self.state = Some(state);
         }
-        let mesh = mb.build(ctx)?;
-        graphics::draw(ctx, &mesh, graphics::DrawParam::default())?;
         graphics::present(ctx)?;
         Ok(())
     }
@@ -267,26 +273,38 @@ fn main() -> ggez::GameResult {
                 .short("g")
                 .help("Simulate gravity when placing a piece."),
         )
+        .arg(
+            Arg::with_name("addr")
+                .required(true)
+                .takes_value(true)
+                .long("address")
+                .short("a")
+                .help("Address to connect to."),
+        )
         .get_matches();
     let size = matches
         .value_of("size")
         .unwrap_or("3")
-        .parse::<usize>()
+        .parse::<u32>()
         .expect("parsing size value");
     let win = matches
         .value_of("win")
         .unwrap_or("3")
-        .parse::<usize>()
+        .parse::<u32>()
         .expect("parsing win value");
+    let address = matches.value_of("addr").unwrap();
     let gravity = matches.is_present("gravity");
     let cb = ggez::ContextBuilder::new("Tick Tack Toe", "Jack Mordaunt")
         .window_setup(ggez::conf::WindowSetup::default().vsync(true));
-    let state = State::new(size, win, gravity);
+    // let state = State::new(size, win, gravity);
     // FIXME: If server controls game state then we needn't setup the state
     // here.
+    // Need to delay use of state object until connection to server has been
+    // established and state has been copied over to this client.
+    let sim = Simulator::new(&format!("ws://{}:8080", address), size, win, gravity);
     let client = &mut Client {
-        sim: Simulator::new(),
-        state: state,
+        sim: sim,
+        state: None,
     };
     let (ctx, event_loop) = &mut cb.build()?;
     event::run(ctx, event_loop, client)
